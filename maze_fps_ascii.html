@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ASCII Maze — Single Pole Fixed</title>
+<style>
+html,body{
+  height:100%;
+  margin:0;
+  background:#000;
+  font-family:"Courier New",monospace;
+  overflow:hidden;
+}
+#gameContainer{position:relative;width:100vw;height:100vh;background:#000;}
+#asciiDisplay{
+  position:absolute; top:0; left:0; width:100%; height:100%;
+  white-space:pre; color:#fff; background:#000;
+  font-size:12px; line-height:12px; letter-spacing:0;
+  overflow:hidden; padding:0; margin:0; user-select:none;
+}
+#info{
+  position:absolute; left:10px; bottom:10px; z-index:9999;
+  background:rgba(0,0,0,0.85); color:#fff; padding:6px 10px; border-radius:6px; font-size:14px;
+  pointer-events:none;
+}
+#minimap{
+  position:absolute; top:10px; left:10px; z-index:9000;
+  background:rgba(0,0,0,0.6); border-radius:4px; display:none;
+  box-shadow:0 4px 10px rgba(0,0,0,0.5);
+}
+#winMessage{
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  z-index:10000; display:none; color:#0f0; font-size:36px; font-weight:700;
+  background:rgba(0,0,0,0.85); padding:18px; border-radius:8px; text-align:center;
+}
+#measureSpan{
+  position:absolute; left:-9999px; top:-9999px; font-size:12px; line-height:12px; visibility:hidden;
+  font-family:"Courier New",monospace;
+}
+</style>
+</head>
+<body>
+  <div id="gameContainer">
+    <div id="asciiDisplay" aria-hidden="false"></div>
+    <canvas id="minimap"></canvas>
+    <div id="info">WASD:Move | Mouse:Look | M:Minimap | R:Reset</div>
+    <div id="winMessage">GOAL!<br><span style="font-size:18px">Press R to reset</span></div>
+    <span id="measureSpan">M</span>
+  </div>
+
+<script>
+const ASCII_CHARS = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+
+class MazeGenerator {
+  constructor(w,h){
+    this.w = w; this.h = h;
+    this.maze = Array.from({length:h}, ()=>Array(w).fill(1));
+  }
+  generate(){
+    const stack = [[1,1]];
+    this.maze[1][1] = 0;
+    const dirs = [[0,2],[2,0],[0,-2],[-2,0]];
+    while(stack.length){
+      const [r,c] = stack[stack.length-1];
+      const shuffled = this.shuffle(dirs.slice());
+      let progressed = false;
+      for(const [dr,dc] of shuffled){
+        const nr = r+dr, nc = c+dc;
+        if(nr>0 && nr < this.h-1 && nc>0 && nc < this.w-1 && this.maze[nr][nc] === 1){
+          this.maze[nr][nc] = 0;
+          this.maze[r+dr/2][c+dc/2] = 0;
+          stack.push([nr,nc]);
+          progressed = true;
+          break;
+        }
+      }
+      if(!progressed) stack.pop();
+    }
+    return this.maze;
+  }
+  shuffle(a){
+    for(let i=a.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];
+    }
+    return a;
+  }
+  findFarthestPoint(sr,sc){
+    const vis = Array.from({length:this.h}, ()=>Array(this.w).fill(false));
+    const q = [[sr,sc,0]]; vis[sr][sc] = true;
+    let far=[sr,sc], maxd=0;
+    while(q.length){
+      const [r,c,d] = q.shift();
+      if(d>maxd){ maxd=d; far=[r,c]; }
+      for(const [dr,dc] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nr=r+dr, nc=c+dc;
+        if(nr>=0 && nc>=0 && nr<this.h && nc<this.w && !vis[nr][nc] && this.maze[nr][nc] === 0){
+          vis[nr][nc]=true; q.push([nr,nc,d+1]);
+        }
+      }
+    }
+    return {row:far[0], col:far[1], distance:maxd};
+  }
+  findStartAndGoal(){
+    const pathCells = [];
+    for(let r=1;r<this.h-1;r++){
+      for(let c=1;c<this.w-1;c++){
+        if(this.maze[r][c] === 0) pathCells.push([r,c]);
+      }
+    }
+    const start = pathCells[Math.floor(Math.random()*pathCells.length)];
+    const goal = this.findFarthestPoint(start[0], start[1]);
+    return { start: {row: start[0], col: start[1]}, goal: {row: goal.row, col: goal.col}, distance: goal.distance };
+  }
+}
+
+class MazeGame {
+  constructor(maze, start, goal){
+    this.maze = maze;
+    this.mazeH = maze.length;
+    this.mazeW = maze[0].length;
+    this.start = start; this.goal = goal;
+
+    this.playerX = this.start.col + 0.5;
+    this.playerY = this.start.row + 0.5;
+    this.playerAngle = 0;
+    this.playerPitch = 0;
+
+    this.goalX = this.goal.col + 0.5;
+    this.goalY = this.goal.row + 0.5;
+
+    this.fov = Math.PI/3;
+    this.vfov = this.fov * (window.innerHeight / window.innerWidth);
+    this.moveSpeed = 0.05;
+    this.turnSpeed = 0.0025;
+    this.maxDepth = 18;
+
+    this.asciiEl = document.getElementById('asciiDisplay');
+    this.minimap = document.getElementById('minimap');
+    this.minimapCtx = this.minimap.getContext ? this.minimap.getContext('2d') : null;
+    this.infoEl = document.getElementById('info');
+    this.winEl = document.getElementById('winMessage');
+    this.measureSpan = document.getElementById('measureSpan');
+
+    this.fontPx = 12;
+    this.measureChar();
+    this.updateGrid();
+
+    if(this.minimapCtx){
+      this.minimap.width = this.mazeW * 4 + 6;
+      this.minimap.height = this.mazeH * 4 + 6;
+    }
+
+    this.keys = {};
+    this.mouseLocked = false;
+    this.debugMode = false;
+
+    this.maxMouseDelta = 80;
+    this.smoothAlpha = 0.25;
+    this.smoothedDX = 0; this.smoothedDY = 0;
+
+    this.poleRadius = 0.25;
+    this.poleColor = 'rgb(255,160,32)';
+
+    this.setupControls();
+    this.waitingReset = false;
+    this.animate();
+  }
+
+  measureChar(){
+    const span = this.measureSpan;
+    span.style.fontSize = this.fontPx + 'px';
+    span.style.lineHeight = this.fontPx + 'px';
+    span.textContent = 'M';
+    const rect = span.getBoundingClientRect();
+    this.charW = Math.max(1, Math.round(rect.width || Math.max(6, Math.round(this.fontPx * 0.6))));
+    this.charH = Math.max(1, Math.round(rect.height || this.fontPx));
+  }
+
+  updateGrid(){
+    const vw = window.innerWidth, vh = window.innerHeight;
+    this.renderWidth = Math.max(8, Math.floor(vw / this.charW));
+    this.renderHeight = Math.max(6, Math.floor(vh / this.charH));
+    this.vfov = this.fov * (this.renderHeight / this.renderWidth);
+    this.asciiEl.style.fontSize = this.fontPx + 'px';
+    this.asciiEl.style.lineHeight = this.fontPx + 'px';
+    this.asciiEl.style.transform = 'none';
+  }
+
+  setupControls(){
+    document.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      this.keys[k] = true;
+      if (k === 'r') location.reload();
+      if (k === 'm') {
+        this.debugMode = !this.debugMode;
+        if (this.minimap) this.minimap.style.display = this.debugMode ? 'block' : 'none';
+      }
+    });
+    document.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false; });
+
+    this.asciiEl.addEventListener('click', () => {
+      if (!this.mouseLocked) this.asciiEl.requestPointerLock();
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this.mouseLocked = document.pointerLockElement === this.asciiEl;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!this.mouseLocked) return;
+      let dx = e.movementX || 0;
+      let dy = e.movementY || 0;
+      if (!Number.isFinite(dx)) dx = 0;
+      if (!Number.isFinite(dy)) dy = 0;
+      dx = Math.max(-this.maxMouseDelta, Math.min(this.maxMouseDelta, dx));
+      dy = Math.max(-this.maxMouseDelta, Math.min(this.maxMouseDelta, dy));
+      this.smoothedDX = this.smoothAlpha * dx + (1 - this.smoothAlpha) * this.smoothedDX;
+      this.smoothedDY = this.smoothAlpha * dy + (1 - this.smoothAlpha) * this.smoothedDY;
+      this.playerAngle += this.smoothedDX * this.turnSpeed;
+      this.playerPitch = Math.max(-0.9, Math.min(0.9, this.playerPitch - this.smoothedDY * this.turnSpeed * 0.6));
+      this.playerAngle = ((this.playerAngle + Math.PI) % (2*Math.PI)) - Math.PI;
+    });
+
+    window.addEventListener('resize', () => { this.measureChar(); this.updateGrid(); });
+  }
+
+  checkCollision(x, y){
+    const margin = 0.22;
+    const pts = [[x,y],[x+margin,y],[x-margin,y],[x,y+margin],[x,y-margin]];
+    for(const[px,py] of pts){
+      const r = Math.floor(py), c = Math.floor(px);
+      if (r < 0 || c < 0 || r >= this.mazeH || c >= this.mazeW) return true;
+      if (this.maze[r][c] === 1) return true;
+    }
+    return false;
+  }
+
+  update(){
+    let mvx = 0, mvy = 0;
+    if (this.keys['w']) { mvx += this.moveSpeed * Math.cos(this.playerAngle); mvy += this.moveSpeed * Math.sin(this.playerAngle); }
+    if (this.keys['s']) { mvx -= this.moveSpeed * Math.cos(this.playerAngle); mvy -= this.moveSpeed * Math.sin(this.playerAngle); }
+    if (this.keys['a']) { mvx += this.moveSpeed * Math.sin(this.playerAngle); mvy -= this.moveSpeed * Math.cos(this.playerAngle); }
+    if (this.keys['d']) { mvx -= this.moveSpeed * Math.sin(this.playerAngle); mvy += this.moveSpeed * Math.cos(this.playerAngle); }
+
+    if (mvx !== 0 || mvy !== 0){
+      const nx = this.playerX + mvx, ny = this.playerY + mvy;
+      if (!this.checkCollision(nx, this.playerY)) this.playerX = nx;
+      if (!this.checkCollision(this.playerX, ny)) this.playerY = ny;
+    }
+
+    const distToGoal = Math.hypot(this.playerX - this.goalX, this.playerY - this.goalY);
+    if (distToGoal < 0.5 && !this.waitingReset){
+      this.waitingReset = true;
+      if (this.winEl) this.winEl.style.display = 'block';
+    }
+  }
+
+  groundRayDist(horizAngle){
+    // DDA法によるグリッドトラバーサル（より正確で高速）
+    const dx = Math.cos(horizAngle);
+    const dy = Math.sin(horizAngle);
+    
+    let x = this.playerX;
+    let y = this.playerY;
+    
+    // 現在のグリッドセル
+    let mapX = Math.floor(x);
+    let mapY = Math.floor(y);
+    
+    // レイの方向
+    const stepX = dx > 0 ? 1 : -1;
+    const stepY = dy > 0 ? 1 : -1;
+    
+    // 次のグリッド境界までの距離
+    const deltaDistX = Math.abs(1 / dx);
+    const deltaDistY = Math.abs(1 / dy);
+    
+    // 次の境界までの累積距離
+    let sideDistX = dx > 0 ? (mapX + 1 - x) * deltaDistX : (x - mapX) * deltaDistX;
+    let sideDistY = dy > 0 ? (mapY + 1 - y) * deltaDistY : (y - mapY) * deltaDistY;
+    
+    let dist = 0;
+    
+    for(let i = 0; i < 200; i++) {
+      // 境界チェック
+      if (mapX < 0 || mapX >= this.mazeW || mapY < 0 || mapY >= this.mazeH) {
+        return dist;
+      }
+      
+      // 壁チェック
+      if (this.maze[mapY][mapX] === 1) {
+        return dist;
+      }
+      
+      // 次のグリッドセルへ
+      if (sideDistX < sideDistY) {
+        sideDistX += deltaDistX;
+        mapX += stepX;
+        dist = sideDistX - deltaDistX;
+      } else {
+        sideDistY += deltaDistY;
+        mapY += stepY;
+        dist = sideDistY - deltaDistY;
+      }
+      
+      if (dist > this.maxDepth) break;
+    }
+    
+    return Math.min(dist, this.maxDepth);
+  }
+
+  renderASCII(){
+    const W = this.renderWidth, H = this.renderHeight;
+    const viewCenter = H/2 + this.playerPitch * H * 0.5;  // プレイヤーの視点の高さ（画面中央）
+
+    // ゴールの位置（道の真ん中）への角度を計算してポールの列を特定
+    let poleColumn = -1;
+    let poleDist = Infinity;
+    
+    const angleToGoal = Math.atan2(this.goalY - this.playerY, this.goalX - this.playerX);
+    let relativeAngle = angleToGoal - this.playerAngle;
+    
+    // 角度を -π から π の範囲に正規化
+    while (relativeAngle > Math.PI) relativeAngle -= 2 * Math.PI;
+    while (relativeAngle < -Math.PI) relativeAngle += 2 * Math.PI;
+    
+    // ゴールが視野角内にあるかチェック
+    if (Math.abs(relativeAngle) <= this.fov / 2) {
+      const columnRatio = (relativeAngle + this.fov / 2) / this.fov;
+      poleColumn = Math.floor(columnRatio * W);
+      if (poleColumn >= 0 && poleColumn < W) {
+        poleDist = Math.hypot(this.goalX - this.playerX, this.goalY - this.playerY);
+      }
+    }
+
+    // 描画
+    let html = '';
+    for (let r = 0; r < H; r++) {
+      for (let cx = 0; cx < W; cx++) {
+        let char = '';
+
+        // ポールの描画（1列のみ：3D空間の地面=高さ0から上へ）
+        if (cx === poleColumn && poleDist < Infinity) {
+          // ポールの距離に応じて、地面（高さ0）の画面上の位置を計算
+          // 距離が近い → 地面は画面下の方
+          // 距離が遠い → 地面は viewCenter に近づく
+          const groundScreenPos = viewCenter + (H * 0.9) / (2 * Math.max(0.0001, poleDist));
+          
+          // 地面から上にポールを描画
+          if (r <= groundScreenPos) {
+            // この列での壁情報を取得（遮蔽判定用）
+            const horizAngle = this.playerAngle - this.fov/2 + (cx / W) * this.fov;
+            const wallDist = this.groundRayDist(horizAngle);
+            const hasWall = wallDist < this.maxDepth;
+            
+            let poleVisible = false;
+            
+            if (!hasWall) {
+              // 壁がない：ポール見える
+              poleVisible = true;
+            } else if (poleDist < wallDist) {
+              // ポールが壁より手前：ポール見える
+              poleVisible = true;
+            } else {
+              // ポールが壁より奥：壁の上端より上ならポール見える
+              const safeWallDist = Math.max(0.0001, wallDist);
+              const wallH = (H * 0.9) / safeWallDist;
+              const wallTop = viewCenter - wallH / 2;
+              if (r < wallTop) {
+                poleVisible = true;
+              }
+            }
+            
+            if (poleVisible) {
+              char = `<span style="color:rgb(255,160,32)">|</span>`;
+            }
+          }
+        }
+
+        // ポールが描画されなかった場合、通常の描画
+        if (char === '') {
+          // このピクセルでのレイ方向を計算
+          const horizAngle = this.playerAngle - this.fov/2 + (cx / W) * this.fov;
+          const vertAngle = this.playerPitch + this.vfov/2 - (r / H) * this.vfov;
+          
+          // 3D方向ベクトル
+          const rayDirX = Math.cos(horizAngle) * Math.cos(vertAngle);
+          const rayDirY = Math.sin(horizAngle) * Math.cos(vertAngle);
+          const rayDirZ = Math.sin(vertAngle);
+          
+          // 水平面での距離を取得
+          const horizDist = this.groundRayDist(horizAngle);
+          
+          if (horizDist >= this.maxDepth) {
+            // 壁がない：空か床
+            char = (r > viewCenter) ? '.' : ' ';
+          } else {
+            // 壁がある：壁の高さを計算
+            const safeHorizDist = Math.max(0.0001, horizDist);
+            const wallH = (H * 0.9) / safeHorizDist;
+            const wallTop = viewCenter - wallH / 2;
+            const wallBottom = viewCenter + wallH / 2;
+            
+            if (r >= wallTop && r <= wallBottom) {
+              // 壁の範囲内：3D距離を計算
+              // 壁上のこの点の高さを計算
+              const wallHeight = (wallBottom - r) / (wallBottom - wallTop); // 0(下) to 1(上)
+              const actualWallHeight = wallHeight * wallH / H * safeHorizDist;
+              
+              // このピクセルから壁上の点までの3D距離
+              const distance3D = Math.sqrt(
+                horizDist * horizDist + 
+                actualWallHeight * actualWallHeight
+              );
+              
+              // 距離ベースの明るさ
+              const bright = Math.max(0, Math.min(1, 1 - distance3D / this.maxDepth));
+              const idx = Math.floor(bright * (ASCII_CHARS.length - 1));
+              char = ASCII_CHARS[idx] || '#';
+            } else if (r > wallBottom) {
+              char = '.';
+            } else {
+              char = ' ';
+            }
+          }
+        }
+
+        html += char;
+      }
+      if (r < H - 1) html += '\n';
+    }
+
+    this.asciiEl.innerHTML = html;
+  }
+
+  renderMinimap(){
+    if (!this.debugMode || !this.minimapCtx) return;
+    const ctx = this.minimapCtx;
+    const s = 4;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0,0,this.minimap.width,this.minimap.height);
+    for(let r=0;r<this.mazeH;r++){
+      for(let c=0;c<this.mazeW;c++){
+        ctx.fillStyle = (this.maze[r][c] === 1) ? '#333' : '#eee';
+        ctx.fillRect(2 + c*s, 2 + r*s, s, s);
+      }
+    }
+    ctx.fillStyle = '#0f0';
+    ctx.beginPath();
+    ctx.arc(2 + this.start.col*s + s/2, 2 + this.start.row*s + s/2, s/2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#f00';
+    ctx.beginPath();
+    ctx.arc(2 + this.goal.col*s + s/2, 2 + this.goal.row*s + s/2, s/2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#00f';
+    ctx.beginPath();
+    ctx.arc(2 + this.playerX*s, 2 + this.playerY*s, s/2, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#ff0';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(2 + this.playerX*s, 2 + this.playerY*s);
+    ctx.lineTo(2 + this.playerX*s + Math.cos(this.playerAngle)*6, 2 + this.playerY*s + Math.sin(this.playerAngle)*6);
+    ctx.stroke();
+  }
+
+  animate(){
+    this.update();
+    this.renderASCII();
+    this.renderMinimap();
+    requestAnimationFrame(()=>this.animate());
+  }
+}
+
+window.addEventListener('load', ()=>{
+  const W = 11, H = 11;
+  const gen = new MazeGenerator(W,H);
+  const maze = gen.generate();
+  const { start, goal } = gen.findStartAndGoal();
+  const game = new MazeGame(maze, start, goal);
+
+  try{ window.focus(); document.body.focus(); } catch(e){}
+});
+</script>
+</body>
+</html>
