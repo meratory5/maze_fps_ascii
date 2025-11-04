@@ -256,7 +256,7 @@ class MazeGame {
   }
 
   groundRayDist(horizAngle){
-    // DDA法によるグリッドトラバーサル（より正確で高速）
+    // DDA法によるグリッドトラバーサル(より正確で高速)
     const dx = Math.cos(horizAngle);
     const dy = Math.sin(horizAngle);
     
@@ -311,9 +311,9 @@ class MazeGame {
 
   renderASCII(){
     const W = this.renderWidth, H = this.renderHeight;
-    const viewCenter = H/2 + this.playerPitch * H * 0.5;  // プレイヤーの視点の高さ（画面中央）
+    const viewCenter = H/2 + this.playerPitch * H * 0.5;  // プレイヤーの視点の高さ(画面中央)
 
-    // ゴールの位置（道の真ん中）への角度を計算してポールの列を特定
+    // ゴールの位置(道の真ん中)への角度を計算してポールの列を特定
     let poleColumn = -1;
     let poleDist = Infinity;
     
@@ -339,16 +339,16 @@ class MazeGame {
       for (let cx = 0; cx < W; cx++) {
         let char = '';
 
-        // ポールの描画（1列のみ：3D空間の地面=高さ0から上へ）
+        // ポールの描画(1列のみ:3D空間の地面=高さ0から上へ)
         if (cx === poleColumn && poleDist < Infinity) {
-          // ポールの距離に応じて、地面（高さ0）の画面上の位置を計算
+          // ポールの距離に応じて、地面(高さ0)の画面上の位置を計算
           // 距離が近い → 地面は画面下の方
           // 距離が遠い → 地面は viewCenter に近づく
           const groundScreenPos = viewCenter + (H * 0.9) / (2 * Math.max(0.0001, poleDist));
           
           // 地面から上にポールを描画
           if (r <= groundScreenPos) {
-            // この列での壁情報を取得（遮蔽判定用）
+            // この列での壁情報を取得(遮蔽判定用)
             const horizAngle = this.playerAngle - this.fov/2 + (cx / W) * this.fov;
             const wallDist = this.groundRayDist(horizAngle);
             const hasWall = wallDist < this.maxDepth;
@@ -356,13 +356,13 @@ class MazeGame {
             let poleVisible = false;
             
             if (!hasWall) {
-              // 壁がない：ポール見える
+              // 壁がない:ポール見える
               poleVisible = true;
             } else if (poleDist < wallDist) {
-              // ポールが壁より手前：ポール見える
+              // ポールが壁より手前:ポール見える
               poleVisible = true;
             } else {
-              // ポールが壁より奥：壁の上端より上ならポール見える
+              // ポールが壁より奥:壁の上端より上ならポール見える
               const safeWallDist = Math.max(0.0001, wallDist);
               const wallH = (H * 0.9) / safeWallDist;
               const wallTop = viewCenter - wallH / 2;
@@ -392,17 +392,17 @@ class MazeGame {
           const horizDist = this.groundRayDist(horizAngle);
           
           if (horizDist >= this.maxDepth) {
-            // 壁がない：空か床
+            // 壁がない:空か床
             char = (r > viewCenter) ? '.' : ' ';
           } else {
-            // 壁がある：壁の高さを計算
+            // 壁がある:壁の高さを計算
             const safeHorizDist = Math.max(0.0001, horizDist);
             const wallH = (H * 0.9) / safeHorizDist;
             const wallTop = viewCenter - wallH / 2;
             const wallBottom = viewCenter + wallH / 2;
             
             if (r >= wallTop && r <= wallBottom) {
-              // 壁の範囲内：3D距離を計算
+              // 壁の範囲内:3D距離を計算
               // 壁上のこの点の高さを計算
               const wallHeight = (wallBottom - r) / (wallBottom - wallTop); // 0(下) to 1(上)
               const actualWallHeight = wallHeight * wallH / H * safeHorizDist;
@@ -474,7 +474,32 @@ class MazeGame {
 }
 
 window.addEventListener('load', ()=>{
-  const W = 11, H = 11;
+  // URLパラメータから迷路サイズを取得
+  // 使い方: ?width=1&height=1 (自然数で指定)
+  // width=1 → 3x3, width=2 → 5x5, width=3 → 7x7, ...
+  // 例: https://yoursite.github.io/maze.html?width=5&height=5
+  const urlParams = new URLSearchParams(window.location.search);
+  
+  // デフォルトは 11x11 (自然数で5に相当)
+  const DEFAULT_SIZE = 5;
+  
+  let widthParam = parseInt(urlParams.get('width'));
+  let heightParam = parseInt(urlParams.get('height'));
+  
+  // 不正な値(NaN, 0以下, 26以上)の場合はデフォルト値を使用
+  if (!Number.isInteger(widthParam) || widthParam < 1 || widthParam > 25) {
+    widthParam = DEFAULT_SIZE;
+  }
+  if (!Number.isInteger(heightParam) || heightParam < 1 || heightParam > 25) {
+    heightParam = DEFAULT_SIZE;
+  }
+  
+  // 自然数nを奇数(2n+1)に変換
+  let W = 2 * widthParam + 1;
+  let H = 2 * heightParam + 1;
+  
+  console.log(`Generating maze: ${W}x${H} (from width=${widthParam}, height=${heightParam})`);
+  
   const gen = new MazeGenerator(W,H);
   const maze = gen.generate();
   const { start, goal } = gen.findStartAndGoal();
